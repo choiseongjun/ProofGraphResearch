@@ -1,0 +1,19 @@
+services:
+  localstack:
+    image: localstack/localstack-pro:latest
+    container_name: proofgraph-localstack
+    ports:
+      - "4566:4566"
+      - "4510-4559:4510-4559"
+    environment:
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:?Set LOCALSTACK_AUTH_TOKEN in your shell before starting LocalStack.}
+      SERVICES: eks,iam,sts,s3,sqs,logs,cloudwatch
+      DEFAULT_REGION: ap-northeast-2
+      DEBUG: "0"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "proofgraph_localstack_data:/var/lib/localstack"
+      - "./init/ready.d:/etc/localstack/init/ready.d"
+
+volumes:
+  proofgraph_localstack_data:
