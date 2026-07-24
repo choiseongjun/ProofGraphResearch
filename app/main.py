@@ -4,13 +4,17 @@ import logging
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.exporter import report_as_pdf
 from app.quality import evaluate_citations
-from app.schemas import AgentEvent, EvaluationResult, ResearchJob, ResearchRequest, ResearchResult
+from app.schemas import AgentEvent, EvaluationResult, KnowledgeCrawlRequest, KnowledgeDocumentRequest, KnowledgeSearchRequest, ResearchJob, ResearchRequest, ResearchResult
+from app.rag_repository import RagRepository
+from app.document_loader import load_url
+from app.workflow_registry import RESEARCH_WORKFLOW, list_workflows
 from app.store import JobStore
 from app.graph_repository import ResearchGraphRepository
 from app.tasks import run_research
@@ -18,6 +22,7 @@ from app.tasks import run_research
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("deep_research")
 app = FastAPI(title="Evidence-first Deep Research", version="1.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=get_settings().frontend_origins.split(","), allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.mount("/static", StaticFiles(directory="web"), name="static")
 
 
@@ -40,6 +45,18 @@ async def request_log(request: Request, call_next):
 def dashboard() -> str:
     with open("web/index.html", encoding="utf-8") as file:
         return file.read()
+
+
+@app.get("/v1/workflows", dependencies=[Depends(authorize)])
+def workflows() -> list[dict]:
+    return list_workflows()
+
+
+@app.get("/v1/workflows/{workflow_id}", dependencies=[Depends(authorize)])
+def workflow_definition(workflow_id: str) -> dict:
+    if workflow_id != RESEARCH_WORKFLOW.id:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    return RESEARCH_WORKFLOW.as_dict()
 
 
 @app.get("/health")
@@ -92,6 +109,61 @@ def metrics_summary() -> dict:
         key = f"{item['metrics'].get('provider', 'unknown')}:{item['metrics'].get('model', 'unknown')}"
         providers[key] = providers.get(key, 0) + 1
     return {"completed_jobs": len(completed), "average_duration_ms": round(sum(durations) / len(durations)), "average_citation_score": round(sum(scores) / len(scores), 1), "providers": providers}
+
+
+@app.post("/v1/knowledge/documents", dependencies=[Depends(authorize)])
+def ingest_knowledge(document: KnowledgeDocumentRequest) -> dict:
+    try:
+        item = document.model_dump()
+        if item.get("url") and not item.get("content"):
+            item = load_url(item["url"])
+        item["title"] = item.get("title") or item.get("url") or "Manual knowledge"
+        chunks = RagRepository().ingest([item], source="manual_upload")
+        return {"indexed_chunks": chunks}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"RAG indexing unavailable: {exc}")
+
+
+@app.post("/v1/knowledge/search", dependencies=[Depends(authorize)])
+def search_knowledge(request: KnowledgeSearchRequest) -> dict:
+    try:
+        return {"results": RagRepository().search(request.query, request.limit)}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"RAG retrieval unavailable: {exc}")
+
+
+@app.post("/v1/knowledge/crawl", dependencies=[Depends(authorize)])
+def crawl_knowledge(request: KnowledgeCrawlRequest) -> dict:
+    """Discover public sources from a topic, fetch their full text, and index them."""
+    from app.research_graph import _search_one
+    queries = [f"{request.topic} market analysis", f"{request.topic} statistics", f"{request.topic} regulations"]
+    discovered: list[dict] = []
+    seen: set[str] = set()
+    for query in queries:
+        for source in _search_one(query):
+            url = source.get("url")
+            if url and url not in seen:
+                seen.add(url)
+                discovered.append(source)
+                if len(discovered) >= request.max_sources:
+                    break
+        if len(discovered) >= request.max_sources:
+            break
+    loaded, failed = [], []
+    for source in discovered:
+        try:
+            loaded.append(load_url(source["url"]))
+        except Exception:
+            # Search snippets are still attributable evidence if a source blocks crawling.
+            if source.get("content"):
+                loaded.append(source)
+            else:
+                failed.append(source["url"])
+    try:
+        chunks = RagRepository().ingest(loaded, source="automatic_web_crawl")
+        return {"discovered_sources": len(discovered), "indexed_documents": len(loaded), "indexed_chunks": chunks, "failed_urls": failed}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Automatic RAG collection unavailable: {exc}")
 
 
 @app.get("/v1/research/{task_id}/events", dependencies=[Depends(authorize)])

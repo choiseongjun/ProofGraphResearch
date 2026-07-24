@@ -5,12 +5,15 @@ from app.research_graph import build_research_graph
 from app.store import JobStore
 from app.quality import evaluate_citations
 from app.artifact_store import upload_markdown_report
+from app.rag_repository import RagRepository
+from app.workflow_registry import RESEARCH_WORKFLOW
 
 
 @celery_app.task(bind=True, name="research.run", max_retries=2)
 def run_research(self, task_id: str, payload: dict) -> dict:
     store = JobStore()
     store.update(task_id, status="running", attempt_count=self.request.retries + 1)
+    store.append_event(task_id, "workflow", "Workflow run started.", {"workflow_id": RESEARCH_WORKFLOW.id, "workflow_version": RESEARCH_WORKFLOW.version})
     store.append_event(task_id, "running", "Worker가 리서치 실행을 시작했습니다.")
     started = time.perf_counter()
     agent_timings: dict[str, int] = {}
@@ -20,6 +23,11 @@ def run_research(self, task_id: str, payload: dict) -> dict:
             store.append_event(task_id, phase, message, details)
         final_state = build_research_graph(emit).invoke({**payload, "task_id": task_id})
         store.save_sources(task_id, final_state.get("sources", []))
+        try:
+            indexed_chunks = RagRepository().ingest(final_state.get("sources", []), source="web_research")
+            store.append_event(task_id, "rag_index", "Research evidence indexed for retrieval.", {"chunks": indexed_chunks})
+        except Exception as rag_error:
+            store.append_event(task_id, "rag_index", "RAG indexing skipped.", {"error": str(rag_error)})
         metrics = evaluate_citations(final_state["draft"], len(final_state.get("sources", [])))
         try:
             artifact_uri = upload_markdown_report(task_id, payload["topic"], final_state["draft"])

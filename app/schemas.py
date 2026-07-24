@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 JobStatus = Literal["queued", "running", "completed", "failed"]
@@ -47,3 +47,25 @@ class EvaluationResult(BaseModel):
     source_count: int
     invalid_citations: list[int]
     summary: str
+
+
+class KnowledgeDocumentRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=500)
+    content: str | None = Field(default=None, max_length=200_000)
+    url: str | None = None
+
+    @model_validator(mode="after")
+    def content_or_url_is_required(self):
+        if not self.content and not self.url:
+            raise ValueError("Provide content or a URL.")
+        return self
+
+
+class KnowledgeSearchRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=500)
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+class KnowledgeCrawlRequest(BaseModel):
+    topic: str = Field(min_length=2, max_length=500)
+    max_sources: int = Field(default=6, ge=1, le=12)

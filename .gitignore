@@ -3,3 +3,7 @@ __pycache__/
 *.py[cod]
 data/*.db
 .pytest_cache/
+frontend/node_modules/
+frontend/.next/
+finetune/data/*.jsonl
+finetune/output/

@@ -13,6 +13,7 @@ from langgraph.graph import END, START, StateGraph
 from app.config import get_settings
 from app.knowledge_base import search_internal_knowledge
 from app.graph_repository import ResearchGraphRepository
+from app.rag_repository import RagRepository
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,23 @@ def searcher(state: ResearchState) -> dict[str, Any]:
     return {"sources": sources}
 
 
+def retriever(state: ResearchState) -> dict[str, Any]:
+    """Adds semantically similar, previously indexed evidence to live web results."""
+    try:
+        matches = RagRepository().search(state["topic"])
+    except Exception as exc:
+        logger.info("RAG retrieval skipped: %s", exc)
+        return {}
+    existing = {item.get("url") or item["title"] for item in state["sources"]}
+    retrieved: list[dict[str, str]] = []
+    for item in matches:
+        key = item.get("url") or item["title"]
+        if key not in existing:
+            existing.add(key)
+            retrieved.append({"title": f"[RAG] {item['title']}", "url": item.get("url") or "", "content": item["content"]})
+    return {"sources": state["sources"] + retrieved}
+
+
 def compressor(state: ResearchState) -> dict[str, Any]:
     """Compression boundary: only compact, attributable evidence reaches the writer."""
     evidence = "\n".join(
@@ -221,6 +239,7 @@ def build_research_graph(on_event: Callable[[str, str, dict[str, Any]], None] | 
         return wrapped
     graph.add_node("planner", instrument("planner", planner))
     graph.add_node("searcher", instrument("searcher", searcher))
+    graph.add_node("retriever", instrument("retriever", retriever))
     graph.add_node("compressor", instrument("compression", compressor))
     graph.add_node("relationship_mapper", instrument("graph_mapper", relationship_mapper))
     graph.add_node("writer", instrument("writer", writer))
@@ -228,7 +247,8 @@ def build_research_graph(on_event: Callable[[str, str, dict[str, Any]], None] | 
     graph.add_node("increment_revision", increment_revision)
     graph.add_edge(START, "planner")
     graph.add_edge("planner", "searcher")
-    graph.add_edge("searcher", "compressor")
+    graph.add_edge("searcher", "retriever")
+    graph.add_edge("retriever", "compressor")
     graph.add_edge("compressor", "relationship_mapper")
     graph.add_edge("relationship_mapper", "writer")
     graph.add_edge("writer", "critic")

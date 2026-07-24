@@ -39,12 +39,14 @@ for ($i = 0; $i -lt 30; $i++) {
 }
 
 if (-not (k3d cluster list -o json | ConvertFrom-Json | Where-Object { $_.name -eq $ClusterName })) {
-    k3d cluster create $ClusterName --servers 1 --agents 1 --port "8000:30080@loadbalancer" --wait
+    k3d cluster create $ClusterName --servers 1 --agents 1 --port "8000:30080@loadbalancer" --port "3000:30000@loadbalancer" --wait
 }
 
 Set-Location $root
 docker build -t proofgraph-research:dev .
+docker build -t proofgraph-web:dev .\frontend
 k3d image import proofgraph-research:dev -c $ClusterName
+k3d image import proofgraph-web:dev -c $ClusterName
 
 $databaseUrl = "postgresql+psycopg://research:$PostgresPassword@postgres:5432/research"
 $neo4jAuth = "neo4j/$Neo4jPassword"
@@ -62,6 +64,7 @@ kubectl -n proofgraph rollout status statefulset/redis --timeout=180s
 kubectl -n proofgraph rollout status statefulset/neo4j --timeout=240s
 kubectl -n proofgraph rollout status deployment/api --timeout=180s
 kubectl -n proofgraph rollout status deployment/worker --timeout=180s
+kubectl -n proofgraph rollout status deployment/web --timeout=180s
 
 Write-Host "Deployment complete: http://localhost:8000" -ForegroundColor Green
 kubectl -n proofgraph get pods,svc

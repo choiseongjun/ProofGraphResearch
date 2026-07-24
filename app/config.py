@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     aws_region: str = "ap-northeast-2"
     aws_access_key_id: str = "test"
     aws_secret_access_key: str = "test"
+    embedding_provider: str = "ollama"
+    embedding_model: str = "nomic-embed-text"
+    embedding_dimensions: int = 768
+    rag_top_k: int = 5
+    frontend_origins: str = "http://localhost:3000"
 
 
 @lru_cache

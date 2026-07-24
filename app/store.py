@@ -4,6 +4,7 @@ from typing import Any
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, MetaData, String, Table, Text, create_engine, select
 from sqlalchemy.engine import Engine
+from pgvector.sqlalchemy import Vector
 from app.config import get_settings
 
 metadata = MetaData()
@@ -32,6 +33,14 @@ knowledge_documents = Table(
     Column("id", Integer, primary_key=True, autoincrement=True), Column("title", Text, nullable=False), Column("url", Text), Column("content", Text, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)),
 )
+knowledge_chunks = Table(
+    "knowledge_chunks", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("document_key", String(128), nullable=False, index=True),
+    Column("title", Text, nullable=False), Column("url", Text), Column("content", Text, nullable=False),
+    Column("metadata", JSON, nullable=False, default=dict), Column("embedding", Vector(768), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)),
+)
 
 
 def _now() -> datetime:
@@ -41,6 +50,9 @@ def _now() -> datetime:
 class JobStore:
     def __init__(self) -> None:
         self.engine: Engine = create_engine(get_settings().database_url, pool_pre_ping=True)
+        if self.engine.dialect.name == "postgresql":
+            with self.engine.begin() as conn:
+                conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector")
         metadata.create_all(self.engine)
         if self.engine.dialect.name == "postgresql":
             with self.engine.begin() as conn:
