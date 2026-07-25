@@ -1,0 +1,41 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: proofgraph-ingestion-worker
+spec:
+  scaleTargetRef:
+    name: ingestion-worker
+  pollingInterval: 15
+  cooldownPeriod: 120
+  # Keep one consumer alive so an acknowledged long-running Celery task is never
+  # stranded after the broker queue becomes empty.
+  minReplicaCount: 1
+  maxReplicaCount: 8
+  triggers:
+    - type: redis
+      metadata:
+        # KEDA runs in the keda namespace, so use the cross-namespace Service FQDN.
+        address: redis.proofgraph.svc.cluster.local:6379
+        listName: ingestion
+        listLength: "5"
+        # Activate a zero-scaled Worker as soon as the first Celery task arrives.
+        activationListLength: "0"
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: proofgraph-research-worker
+spec:
+  scaleTargetRef:
+    name: worker
+  pollingInterval: 15
+  cooldownPeriod: 120
+  minReplicaCount: 1
+  maxReplicaCount: 5
+  triggers:
+    - type: redis
+      metadata:
+        address: redis.proofgraph.svc.cluster.local:6379
+        listName: celery
+        listLength: "3"
+        activationListLength: "1"
