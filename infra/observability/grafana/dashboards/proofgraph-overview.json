@@ -1,0 +1,19 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "panels": [
+    {"type":"stat","title":"RAG 청크 수","targets":[{"expr":"proofgraph_knowledge_chunks","refId":"A"}],"gridPos":{"h":6,"w":6,"x":0,"y":0}},
+    {"type":"stat","title":"대기 수집 작업","targets":[{"expr":"proofgraph_ingestion_jobs{status=\"queued\"}","refId":"A"}],"gridPos":{"h":6,"w":6,"x":6,"y":0}},
+    {"type":"stat","title":"진행 중 수집 작업","targets":[{"expr":"proofgraph_ingestion_jobs{status=\"running\"}","refId":"A"}],"gridPos":{"h":6,"w":6,"x":12,"y":0}},
+    {"type":"stat","title":"완료된 수집 작업","targets":[{"expr":"proofgraph_ingestion_jobs{status=\"completed\"}","refId":"A"}],"gridPos":{"h":6,"w":6,"x":18,"y":0}},
+    {"type":"timeseries","title":"API 요청률","targets":[{"expr":"sum(rate(proofgraph_http_requests_total[5m])) by (path)","legendFormat":"{{path}}","refId":"A"}],"gridPos":{"h":8,"w":12,"x":0,"y":6}},
+    {"type":"timeseries","title":"API p95 응답 시간","targets":[{"expr":"histogram_quantile(0.95, sum(rate(proofgraph_http_request_duration_seconds_bucket[5m])) by (le, path))","legendFormat":"{{path}}","refId":"A"}],"gridPos":{"h":8,"w":12,"x":12,"y":6}},
+    {"type":"timeseries","title":"Celery 큐 적체","targets":[{"expr":"proofgraph_celery_queue_messages","legendFormat":"{{queue}}","refId":"A"}],"gridPos":{"h":8,"w":12,"x":0,"y":14}},
+    {"type":"timeseries","title":"Redis 메모리","targets":[{"expr":"redis_memory_used_bytes","legendFormat":"used bytes","refId":"A"}],"gridPos":{"h":8,"w":12,"x":12,"y":14}},
+    {"type":"timeseries","title":"작업 상태 변화","targets":[{"expr":"proofgraph_ingestion_jobs","legendFormat":"수집 {{status}}","refId":"A"},{"expr":"proofgraph_research_jobs","legendFormat":"리서치 {{status}}","refId":"B"}],"gridPos":{"h":8,"w":24,"x":0,"y":22}}
+  ],
+  "schemaVersion": 39,
+  "title": "ProofGraph 운영 대시보드",
+  "uid": "proofgraph-overview",
+  "version": 1
+}

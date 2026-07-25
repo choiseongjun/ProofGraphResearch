@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
@@ -11,13 +12,14 @@ from fastapi.staticfiles import StaticFiles
 from app.config import get_settings
 from app.exporter import report_as_pdf
 from app.quality import evaluate_citations
-from app.schemas import AgentEvent, EvaluationResult, KnowledgeCrawlRequest, KnowledgeDocumentRequest, KnowledgeSearchRequest, ResearchJob, ResearchRequest, ResearchResult
+from app.schemas import AgentEvent, BulkIngestionRequest, EvaluationResult, IngestionJob, KnowledgeCrawlRequest, KnowledgeDocumentRequest, KnowledgeSearchRequest, ResearchJob, ResearchRequest, ResearchResult
 from app.rag_repository import RagRepository
 from app.document_loader import load_url
 from app.workflow_registry import RESEARCH_WORKFLOW, list_workflows
 from app.store import JobStore
 from app.graph_repository import ResearchGraphRepository
-from app.tasks import run_research
+from app.tasks import run_bulk_ingestion, run_research
+from app.observability import HTTP_DURATION, HTTP_REQUESTS, INGESTION_REQUESTS, RESEARCH_REQUESTS, metrics_response
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("deep_research")
@@ -35,8 +37,12 @@ def authorize(x_api_key: str | None = Header(default=None), api_key: str | None 
 @app.middleware("http")
 async def request_log(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID", str(uuid4()))
+    started = time.perf_counter()
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
+    path = request.url.path if request.url.path != "/metrics" else "/metrics"
+    HTTP_REQUESTS.labels(request.method, path, str(response.status_code)).inc()
+    HTTP_DURATION.labels(request.method, path).observe(time.perf_counter() - started)
     logger.info(json.dumps({"request_id": request_id, "method": request.method, "path": request.url.path, "status": response.status_code}))
     return response
 
@@ -64,12 +70,19 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "evidence-first-deep-research"}
 
 
+@app.get("/metrics", include_in_schema=False)
+def prometheus_metrics() -> Response:
+    payload, content_type = metrics_response()
+    return Response(content=payload, media_type=content_type)
+
+
 @app.post("/v1/research", response_model=ResearchJob, status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(authorize)])
 @app.post("/research", response_model=ResearchJob, status_code=status.HTTP_202_ACCEPTED, include_in_schema=False, dependencies=[Depends(authorize)])
 def create_research(request: ResearchRequest) -> ResearchJob:
     task_id = str(uuid4())
     record = JobStore().create(task_id, request.model_dump())
     run_research.delay(task_id, request.model_dump())
+    RESEARCH_REQUESTS.inc()
     return ResearchJob(**record)
 
 
@@ -136,12 +149,13 @@ def search_knowledge(request: KnowledgeSearchRequest) -> dict:
 def crawl_knowledge(request: KnowledgeCrawlRequest) -> dict:
     """Discover public sources from a topic, fetch their full text, and index them."""
     from app.research_graph import _search_one
+    from app.crawl_policy import canonical_url
     queries = [f"{request.topic} market analysis", f"{request.topic} statistics", f"{request.topic} regulations"]
     discovered: list[dict] = []
     seen: set[str] = set()
     for query in queries:
         for source in _search_one(query):
-            url = source.get("url")
+            url = canonical_url(source.get("url")) if source.get("url") else None
             if url and url not in seen:
                 seen.add(url)
                 discovered.append(source)
@@ -160,10 +174,46 @@ def crawl_knowledge(request: KnowledgeCrawlRequest) -> dict:
             else:
                 failed.append(source["url"])
     try:
+        # Keep the single-topic UI flow subject to the same evidence-retention
+        # policy as the asynchronous bulk ingestion flow.
+        from app.artifact_store import archive_source_document
+        for document in loaded:
+            try:
+                document["artifact_uri"] = archive_source_document(document)
+            except Exception:
+                document["artifact_uri"] = None
         chunks = RagRepository().ingest(loaded, source="automatic_web_crawl")
         return {"discovered_sources": len(discovered), "indexed_documents": len(loaded), "indexed_chunks": chunks, "failed_urls": failed}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Automatic RAG collection unavailable: {exc}")
+
+
+@app.post("/v1/knowledge/vector-sync", dependencies=[Depends(authorize)])
+def sync_vectors_to_qdrant() -> dict:
+    """Backfill the dedicated vector store from PostgreSQL without re-crawling sources."""
+    try:
+        return {"synced_chunks": RagRepository().sync_postgres_to_qdrant()}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Qdrant synchronization unavailable: {exc}")
+
+
+@app.post("/v1/ingestion/jobs", response_model=IngestionJob, status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(authorize)])
+def create_bulk_ingestion(request: BulkIngestionRequest) -> IngestionJob:
+    """Queue a large topic batch; a dedicated worker applies backpressure through bounded embedding batches."""
+    job_id = str(uuid4())
+    store = JobStore()
+    record = store.create_ingestion_job(job_id, request.topics)
+    run_bulk_ingestion.apply_async(args=[job_id, request.topics, request.max_sources_per_topic], queue="ingestion")
+    INGESTION_REQUESTS.inc()
+    return IngestionJob(**record)
+
+
+@app.get("/v1/ingestion/jobs/{job_id}", response_model=IngestionJob, dependencies=[Depends(authorize)])
+def get_bulk_ingestion(job_id: str) -> IngestionJob:
+    record = JobStore().get_ingestion_job(job_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Ingestion job not found")
+    return IngestionJob(**record)
 
 
 @app.get("/v1/research/{task_id}/events", dependencies=[Depends(authorize)])

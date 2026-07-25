@@ -13,7 +13,16 @@ data:
   NEO4J_USER: neo4j
   ARTIFACT_STORAGE_ENABLED: "true"
   ARTIFACT_BUCKET: proofgraph-reports
+  RAW_DOCUMENT_STORAGE_ENABLED: "true"
+  RAW_DOCUMENT_BUCKET: proofgraph-raw
   AWS_ENDPOINT_URL: http://host.k3d.internal:4566
   AWS_REGION: ap-northeast-2
   AWS_ACCESS_KEY_ID: test
   AWS_SECRET_ACCESS_KEY: test
+  VECTOR_BACKEND: qdrant
+  QDRANT_URL: http://qdrant:6333
+  QDRANT_COLLECTION: proofgraph_knowledge
+  CRAWLER_USER_AGENT: ProofGraphResearch/1.0 (+research indexing)
+  CRAWLER_REQUEST_INTERVAL_SECONDS: "1.0"
+  CRAWLER_RESPECT_ROBOTS_TXT: "true"
+  FRONTEND_ORIGINS: http://localhost:13000,http://localhost:3000

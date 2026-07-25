@@ -7,6 +7,7 @@ type Job = { task_id: string; status: string; report?: string; error?: string; m
 type SearchResult = { title: string; url?: string; content: string; score: number };
 type Workflow = { id: string; version: string; quality_gate: string; steps: { id: string; name: string; responsibility: string }[] };
 type Source = { source_number: number; title: string; url?: string; content?: string; source_type: string };
+type IngestionJob = { job_id: string; status: string; processed_documents: number; indexed_chunks: number; failed_documents: number };
 
 export default function Dashboard() {
   const [apiKey, setApiKey] = useState("");
@@ -17,6 +18,8 @@ export default function Dashboard() {
   const [job, setJob] = useState<Job | null>(null);
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [bulkTopics, setBulkTopics] = useState("한국 AI 에이전트 시장\n금융 AI 규제\n제조 AI 도입");
+  const [ingestionJob, setIngestionJob] = useState<IngestionJob | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
   const [evaluation, setEvaluation] = useState<Record<string, unknown> | null>(null);
   const [graph, setGraph] = useState<Record<string, unknown> | null>(null);
@@ -53,6 +56,22 @@ export default function Dashboard() {
     const response = await fetch(`${apiBase}/v1/workflows/evidence-first-research`, { headers }); const data = await response.json();
     if (response.ok) setWorkflow(data); else setMessage(data.detail || "워크플로 정의를 불러오지 못했습니다.");
   }
+  async function bulkIngest(event: FormEvent) {
+    event.preventDefault();
+    const topics = bulkTopics.split("\n").map(value => value.trim()).filter(Boolean);
+    if (!topics.length) return setMessage("수집할 주제를 한 줄에 하나씩 입력하세요.");
+    setMessage("대량 수집 작업을 큐에 등록했습니다.");
+    const response = await fetch(`${apiBase}/v1/ingestion/jobs`, { method: "POST", headers, body: JSON.stringify({ topics, max_sources_per_topic: 8 }) }); const data = await response.json();
+    if (!response.ok) return setMessage(data.detail || "대량 수집 요청에 실패했습니다.");
+    setIngestionJob(data); pollIngestion(data.job_id);
+  }
+  async function pollIngestion(id: string) {
+    const timer = window.setInterval(async () => {
+      const response = await fetch(`${apiBase}/v1/ingestion/jobs/${id}`, { headers }); const data = await response.json();
+      if (response.ok) setIngestionJob(data);
+      if (data.status === "completed" || data.status === "failed") { window.clearInterval(timer); setMessage(data.status === "completed" ? "대량 수집과 벡터 색인이 완료됐습니다." : data.error || "대량 수집에 실패했습니다."); }
+    }, 1600);
+  }
   async function inspectRun(kind: "sources" | "evaluation" | "graph") {
     if (!job) return;
     const response = await fetch(`${apiBase}/v1/research/${job.task_id}/${kind}`, { headers }); const data = await response.json();
@@ -71,6 +90,7 @@ export default function Dashboard() {
       <article className="wide"><h2>워크플로 계약</h2><p>각 실행은 단계, 데이터 계약, 실패 정책, 품질 게이트로 관리됩니다.</p><button onClick={showWorkflow}>워크플로 정의 보기</button>{workflow && <div className="workflow"><b>{workflow.id} / v{workflow.version}</b><p>{workflow.quality_gate}</p>{workflow.steps.map(step => <div key={step.id}><code>{step.id}</code><strong>{step.name}</strong><span>{step.responsibility}</span></div>)}</div>}</article>
       <article><h2>리서치 워크플로 실행</h2><form onSubmit={research}><label>API 키 (선택)<input value={apiKey} onChange={e => setApiKey(e.target.value)} type="password" /></label><label>비즈니스 주제<textarea value={topic} onChange={e => setTopic(e.target.value)} /></label><button>워크플로 실행 시작</button></form>{job && <div className="status"><b>{job.status.toUpperCase()}</b><code>{job.task_id}</code>{job.metrics && <pre>{JSON.stringify(job.metrics, null, 2)}</pre>}</div>}</article>
       <article><h2>RAG 자동 수집·색인</h2><p>주제만 입력하면 시스템이 공개 근거를 탐색하고, 본문 수집·청킹·임베딩을 자동 수행합니다.</p><form onSubmit={crawl}><label>수집 주제<input required value={crawlTopic} onChange={e => setCrawlTopic(e.target.value)} /></label><button>근거 자동 수집·색인</button></form></article>
+      <article><h2>대량 수집 작업</h2><p>여러 주제를 큐에 등록하면 전용 Worker가 병렬로 수집·청킹·임베딩합니다.</p><form onSubmit={bulkIngest}><label>수집 주제 목록 (한 줄에 하나)<textarea value={bulkTopics} onChange={e => setBulkTopics(e.target.value)} /></label><button>대량 수집 작업 시작</button></form>{ingestionJob && <div className="status"><b>{ingestionJob.status.toUpperCase()}</b><code>{ingestionJob.job_id}</code><p>문서 {ingestionJob.processed_documents}개 · 청크 {ingestionJob.indexed_chunks}개 · 실패 {ingestionJob.failed_documents}개</p></div>}</article>
       <article className="wide"><h2>벡터 검색</h2><form className="inline" onSubmit={search}><input required value={query} onChange={e => setQuery(e.target.value)} placeholder="누적 근거를 의미 기반으로 검색" /><button>검색</button></form><div className="results">{results.map((item, index) => <div key={index}><b>{item.title}</b><small> 유사도 {Number(item.score).toFixed(3)}</small><p>{item.content}</p>{item.url && <a href={item.url} target="_blank">원문 열기</a>}</div>)}</div></article>
       <article className="wide"><h2>런타임 상태</h2><p className="message">{message}</p>{job?.report && <><div className="next-actions"><b>다음 단계</b><span>보고서의 근거와 품질을 검증한 뒤, Markdown 또는 PDF로 내보내세요.</span><button onClick={() => inspectRun("sources")}>출처 확인</button><button onClick={() => inspectRun("evaluation")}>품질 점수 확인</button><button onClick={() => inspectRun("graph")}>근거 그래프 확인</button><button onClick={() => exportReport("md")}>Markdown 내보내기</button><button onClick={() => exportReport("pdf")}>PDF 내보내기</button></div><pre className="report">{job.report}</pre></>}{sources.length > 0 && <div className="inspection"><h3>수집 출처</h3>{sources.map(source => <div key={source.source_number}><b>[{source.source_number}] {source.title}</b>{source.url && <a href={source.url} target="_blank">원문 열기</a>}<p>{source.content?.slice(0, 400)}</p></div>)}</div>}{evaluation && <div className="inspection"><h3>품질 평가</h3><pre>{JSON.stringify(evaluation, null, 2)}</pre></div>}{graph && <div className="inspection"><h3>근거 그래프</h3><pre>{JSON.stringify(graph, null, 2)}</pre></div>}</article>
     </section>

@@ -8,4 +8,4 @@ celery_app = Celery(
     include=["app.tasks"],  # Register `research.run` in every worker process.
 )
 # PostgreSQL is the source of truth for job state/results; Redis is only Celery's broker.
-celery_app.conf.update(task_track_started=True, timezone="Asia/Seoul")
+celery_app.conf.update(task_track_started=True, timezone="Asia/Seoul", task_routes={"ingestion.run": {"queue": "ingestion"}})

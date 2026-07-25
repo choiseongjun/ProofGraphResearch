@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, MetaData, String, Table, Text, create_engine, select
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, MetaData, String, Table, Text, create_engine, func, select
 from sqlalchemy.engine import Engine
 from pgvector.sqlalchemy import Vector
 from app.config import get_settings
@@ -41,6 +41,19 @@ knowledge_chunks = Table(
     Column("metadata", JSON, nullable=False, default=dict), Column("embedding", Vector(768), nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)),
 )
+crawl_documents = Table(
+    "crawl_documents", metadata,
+    Column("url", Text, primary_key=True), Column("content_hash", String(64), nullable=False),
+    Column("version", Integer, nullable=False, default=1), Column("etag", String(512)),
+    Column("last_modified", String(512)), Column("fetched_at", DateTime(timezone=True), nullable=False),
+)
+ingestion_jobs = Table(
+    "ingestion_jobs", metadata,
+    Column("job_id", String(36), primary_key=True), Column("status", String(16), nullable=False),
+    Column("topics", JSON, nullable=False), Column("processed_documents", Integer, nullable=False, default=0),
+    Column("indexed_chunks", Integer, nullable=False, default=0), Column("failed_documents", Integer, nullable=False, default=0),
+    Column("error", Text), Column("created_at", DateTime(timezone=True), nullable=False), Column("updated_at", DateTime(timezone=True), nullable=False),
+)
 
 
 def _now() -> datetime:
@@ -58,6 +71,7 @@ class JobStore:
             with self.engine.begin() as conn:
                 conn.exec_driver_sql("ALTER TABLE research_jobs ADD COLUMN IF NOT EXISTS retry_of VARCHAR(36)")
                 conn.exec_driver_sql("ALTER TABLE research_jobs ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0")
+                conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS knowledge_chunks_embedding_hnsw ON knowledge_chunks USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64)")
 
     @staticmethod
     def _record(row: Any) -> dict[str, Any]:
@@ -107,3 +121,43 @@ class JobStore:
         with self.engine.connect() as conn:
             rows = conn.execute(select(jobs).order_by(jobs.c.created_at.desc()).limit(limit)).mappings().all()
         return [self._record(row) for row in rows]
+
+    def create_ingestion_job(self, job_id: str, topics: list[str]) -> dict[str, Any]:
+        stamp = _now()
+        with self.engine.begin() as conn:
+            conn.execute(ingestion_jobs.insert().values(job_id=job_id, status="queued", topics=topics, processed_documents=0, indexed_chunks=0, failed_documents=0, created_at=stamp, updated_at=stamp))
+        return self.get_ingestion_job(job_id)  # type: ignore[return-value]
+
+    def update_ingestion_job(self, job_id: str, **changes: Any) -> dict[str, Any]:
+        changes["updated_at"] = _now()
+        with self.engine.begin() as conn:
+            conn.execute(ingestion_jobs.update().where(ingestion_jobs.c.job_id == job_id).values(**changes))
+        return self.get_ingestion_job(job_id)  # type: ignore[return-value]
+
+    def get_ingestion_job(self, job_id: str) -> dict[str, Any] | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(select(ingestion_jobs).where(ingestion_jobs.c.job_id == job_id)).mappings().first()
+        return self._record(row) if row else None
+
+    def list_ingestion_jobs(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(select(ingestion_jobs).order_by(ingestion_jobs.c.created_at.desc()).limit(limit)).mappings().all()
+        return [self._record(row) for row in rows]
+
+    def count_knowledge_chunks(self) -> int:
+        with self.engine.connect() as conn:
+            return int(conn.execute(select(func.count()).select_from(knowledge_chunks)).scalar_one())
+
+    def register_crawl_document(self, url: str, content_hash: str, etag: str | None = None, last_modified: str | None = None) -> tuple[bool, int]:
+        """Return whether this is new content and its monotonically increasing version."""
+        with self.engine.begin() as conn:
+            current = conn.execute(select(crawl_documents).where(crawl_documents.c.url == url)).mappings().first()
+            if current and current["content_hash"] == content_hash:
+                return False, current["version"]
+            version = (current["version"] + 1) if current else 1
+            values = {"url": url, "content_hash": content_hash, "version": version, "etag": etag, "last_modified": last_modified, "fetched_at": _now()}
+            if current:
+                conn.execute(crawl_documents.update().where(crawl_documents.c.url == url).values(**values))
+            else:
+                conn.execute(crawl_documents.insert().values(**values))
+        return True, version

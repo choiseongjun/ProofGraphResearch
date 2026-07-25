@@ -11,3 +11,8 @@ def test_chunking_preserves_content_and_overlaps():
 
 def test_chunking_ignores_blank_content():
     assert _chunks("  \n\t ") == []
+
+
+def test_chunking_removes_postgresql_unsafe_nul_bytes():
+    chunks = _chunks("evidence\x00with\x00binary fragments")
+    assert chunks == ["evidence with binary fragments"]

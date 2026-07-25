@@ -69,3 +69,20 @@ class KnowledgeSearchRequest(BaseModel):
 class KnowledgeCrawlRequest(BaseModel):
     topic: str = Field(min_length=2, max_length=500)
     max_sources: int = Field(default=6, ge=1, le=12)
+
+
+class BulkIngestionRequest(BaseModel):
+    topics: list[str] = Field(min_length=1, max_length=100)
+    max_sources_per_topic: int = Field(default=8, ge=1, le=20)
+
+
+class IngestionJob(BaseModel):
+    job_id: str
+    status: str
+    topics: list[str]
+    processed_documents: int
+    indexed_chunks: int
+    failed_documents: int
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime

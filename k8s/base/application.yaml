@@ -66,3 +66,21 @@ spec:
   type: NodePort
   selector: {app: web}
   ports: [{port: 3000, targetPort: 3000, nodePort: 30000}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: ingestion-worker}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: ingestion-worker}}
+  template:
+    metadata: {labels: {app: ingestion-worker}}
+    spec:
+      terminationGracePeriodSeconds: 600
+      containers:
+        - name: ingestion-worker
+          image: proofgraph-research:dev
+          imagePullPolicy: IfNotPresent
+          command: ["celery", "-A", "app.celery_app", "worker", "-Q", "ingestion", "--concurrency=2", "--loglevel=INFO"]
+          envFrom: [{configMapRef: {name: research-config}}, {secretRef: {name: research-secrets}}]
+          resources: {requests: {cpu: 500m, memory: 1Gi}, limits: {cpu: "2", memory: 3Gi}}

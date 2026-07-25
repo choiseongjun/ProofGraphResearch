@@ -7,6 +7,7 @@ from app.quality import evaluate_citations
 from app.artifact_store import upload_markdown_report
 from app.rag_repository import RagRepository
 from app.workflow_registry import RESEARCH_WORKFLOW
+from app.bulk_ingestion import ingest_topics
 
 
 @celery_app.task(bind=True, name="research.run", max_retries=2)
@@ -49,4 +50,21 @@ def run_research(self, task_id: str, payload: dict) -> dict:
             raise self.retry(exc=exc, countdown=10 * (self.request.retries + 1))
         store.update(task_id, status="failed", error=str(exc))
         store.append_event(task_id, "failed", "작업 실행 중 오류가 발생했습니다.")
+        raise
+
+
+@celery_app.task(bind=True, name="ingestion.run", max_retries=2)
+def run_bulk_ingestion(self, job_id: str, topics: list[str], max_sources: int) -> dict:
+    store = JobStore()
+    store.update_ingestion_job(job_id, status="running")
+    try:
+        def progress(processed: int, chunks: int, failed: int) -> None:
+            store.update_ingestion_job(job_id, processed_documents=processed, indexed_chunks=chunks, failed_documents=failed)
+        result = ingest_topics(topics, max_sources, progress)
+        store.update_ingestion_job(job_id, status="completed", **result)
+        return {"job_id": job_id, **result}
+    except Exception as exc:
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc, countdown=20 * (self.request.retries + 1))
+        store.update_ingestion_job(job_id, status="failed", error=str(exc))
         raise
